@@ -92,6 +92,10 @@ unsigned long F_JS8;
 unsigned long F_WSPR;
 
 uint32_t LastCodeFreq = 100000;
+uint16_t FreqValue;
+int32_t  FSKFilteredTicks, FSKFilter_a0, FSKScaledTicks, FSKFilter_b1, FSKFilterLastOut, FSKtemp, FSKLastError, VTest;
+
+
 
 //------------ CAT Variables
 boolean cat_stat = 0;
@@ -150,6 +154,16 @@ void setup() {
   pinMode(RX, OUTPUT);
   pinMode(7, INPUT); //PD7 = AN1 = HiZ, PD6 = AN0 = 0
 
+
+  // Coefficient calculation: our samplerate varies with tone frequency, TODO: should be resampled at fixed freq
+  //x = exp(-2.0*pi*freq/samplerate);
+  //a0 = 1.0-x;
+  //b1 = -x;
+
+  FSKFilter_a0 = 25; // 1000 - 533;
+  FSKFilter_b1 = -75; // -533;
+
+
   //SET UP SERIAL FOR CAT CONTROL
 
   Serial.begin(9600);
@@ -176,6 +190,12 @@ void setup() {
   TCCR1B = 0x81; // Timer1 Input Capture Noise Canceller
   ACSR |= (1 << ACIC); // Analog Comparator Capture Input
 
+  ACSR |= B00010000;      // Clear flag comparator interrupt (ACI bit to 1)
+  ACSR |= B00000011;      // Set interrupt on rising edge*/
+
+  //Enable comparator interrupt
+  ACSR |= (1 << ACIE);
+
   digitalWrite(RX, LOW);
 
   Band_assign();
@@ -188,7 +208,16 @@ void setup() {
 //***************************[ Main LOOP Function ]**************************
 void loop() {
   // CAT CHECK SERIAL FOR NEW DATA FROM WSJT-X AND RESPOND TO QUERIES
-
+  uint32_t CodeFreq = (16000000 / FreqValue);
+  noInterrupts();
+  Serial.print( FSKScaledTicks);
+  Serial.print("  ");
+   Serial.print(FSKtemp);
+  Serial.print("  ");
+  Serial.print(VTest);
+  Serial.print("  ");
+  Serial.println( FSKFilteredTicks);
+  interrupts();
 
 
   if ((Serial.available() > 0) || (cat_stat == 1)) {
@@ -265,8 +294,8 @@ void loop() {
   int FSK = 1;
   int FSKtx = 0;
 
-#define DO__OLD_FSK
-  
+  //#define DO__OLD_FSK
+
 #if defined( DO_OLD_FSK)
   while (FSK > 0) {
     int Nsignal = 10;
@@ -275,6 +304,7 @@ void loop() {
     int Ncycle23 = 0;
     int Ncycle34 = 0;
     unsigned int d1 = 1, d2 = 2, d3 = 3, d4 = 4;
+    Serial.println("----------------");
 
     TCNT1 = 0;
     while (ACSR & (1 << ACO)) { //while input high
@@ -418,7 +448,6 @@ void loop() {
   TX_State = 0;
   digitalWrite(RX, HIGH);
   FSKtx = 0;
-
 }
 
 //*********************[ END OF MAIN LOOP FUNCTION ]*************************
@@ -426,6 +455,38 @@ void loop() {
 //********************************************************************************
 //******************************** [ FUNCTIONS ] *********************************
 //********************************************************************************
+
+ISR (ANALOG_COMP_vect)
+{
+  if (ACSR & (1 << ACO)) // Comparator out is high. Shouldn't be necessary, IRQ is only for rising edge. But because of noise and no hysteresis triggers on both edges
+    if (TCNT1 > 5333 && TCNT1 < 53333)  //prevents spurious interrupts, no hysteresis in AVR comparator. 300-3000 Hz range
+    {
+      FSKScaledTicks = TCNT1;
+      TCNT1 = 0;
+ //     FSKScaledTicks = 1000; // Scales after counter reset, should be faster and reading more accurate
+      //one pole low pass IIR
+      //   FSKFilteredTicks = round((FSKFilter_a0 * FSKScaledTicks - FSKFilter_b1 * FSKFilterLastOut)/1000);
+ /*     FSKtemp = FSKFilter_a0 * FSKScaledTicks - FSKFilter_b1 * FSKFilterLastOut - FSKLastError;
+      FSKFilteredTicks = round(FSKtemp / 1000);
+      FSKFilterLastOut = FSKFilteredTicks;
+      FSKLastError = FSKFilteredTicks * 1000 - FSKtemp;
+*/
+/*   FSKtemp = FSKFilter_a0 * FSKScaledTicks * 256 - FSKFilter_b1 * FSKFilterLastOut;
+      FSKFilterLastOut = FSKtemp / 1000;
+      FSKFilteredTicks = round(FSKFilterLastOut / 256);
+ */
+ FSKtemp = (long)FSKFilter_a0 * (long)FSKScaledTicks  - (long)FSKFilter_b1 * (long)FSKFilterLastOut;
+
+ VTest = (long)FSKFilter_b1 * (long)FSKFilterLastOut;
+     
+      FSKFilterLastOut = FSKFilteredTicks = ((long)FSKtemp / 100L);
+      
+
+    }
+}
+
+
+
 
 
 //************************************[ MODE Assign ]**********************************
