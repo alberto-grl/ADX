@@ -93,9 +93,10 @@ unsigned long F_WSPR;
 
 uint32_t LastCodeFreq = 100000;
 uint16_t FreqValue;
-int32_t  FSKFilteredTicks, FSKFilter_a0, FSKScaledTicks, FSKFilter_b1, FSKFilterLastOut, FSKtemp, FSKLastError, VTest;
-
-
+uint32_t  FSKFilteredTicks, FSKFilter_a0, FSKTicks, FSKFilter_b1, FSKFilterLastOut, FSKLastError, VTest;
+uint32_t  FSKtemp;
+uint32_t TestVar2;
+uint8_t FSKDetected = 0;
 
 //------------ CAT Variables
 boolean cat_stat = 0;
@@ -160,8 +161,8 @@ void setup() {
   //a0 = 1.0-x;
   //b1 = -x;
 
-  FSKFilter_a0 = 25; // 1000 - 533;
-  FSKFilter_b1 = -75; // -533;
+  FSKFilter_a0 = 16;
+  FSKFilter_b1 = 256 - FSKFilter_a0;
 
 
   //SET UP SERIAL FOR CAT CONTROL
@@ -190,6 +191,10 @@ void setup() {
   TCCR1B = 0x81; // Timer1 Input Capture Noise Canceller
   ACSR |= (1 << ACIC); // Analog Comparator Capture Input
 
+  //Test with bangbap reference, typ 1.1V
+   ACSR |= (1 << ACBG); // Analog Comparator Bandgap select
+
+
   ACSR |= B00010000;      // Clear flag comparator interrupt (ACI bit to 1)
   ACSR |= B00000011;      // Set interrupt on rising edge*/
 
@@ -209,15 +214,15 @@ void setup() {
 void loop() {
   // CAT CHECK SERIAL FOR NEW DATA FROM WSJT-X AND RESPOND TO QUERIES
   uint32_t CodeFreq = (16000000 / FreqValue);
-  noInterrupts();
-  Serial.print( FSKScaledTicks);
-  Serial.print("  ");
-   Serial.print(FSKtemp);
-  Serial.print("  ");
-  Serial.print(VTest);
-  Serial.print("  ");
-  Serial.println( FSKFilteredTicks);
-  interrupts();
+
+  Serial.print( ( 16000000 / (FSKTicks)));
+  /* Serial.print("  ");
+    Serial.print((uint32_t)(FSKtemp));
+    Serial.print("  ");
+    Serial.print(VTest);
+  */   Serial.print("  ");
+  Serial.println(  (uint32_t)(160000000000ULL / (FSKFilteredTicks)));
+
 
 
   if ((Serial.available() > 0) || (cat_stat == 1)) {
@@ -287,159 +292,36 @@ void loop() {
   }
 
 
-  // The following code is from JE1RAV https://github.com/je1rav/QP-7C
-  //(Using 3 cycles for timer sampling to improve the precision of frequency measurements)
-  //(Against overflow in low frequency measurements)
-
-  int FSK = 1;
   int FSKtx = 0;
 
-  //#define DO__OLD_FSK
 
-#if defined( DO_OLD_FSK)
-  while (FSK > 0) {
-    int Nsignal = 10;
-    int Ncycle01 = 0;
-    int Ncycle12 = 0;
-    int Ncycle23 = 0;
-    int Ncycle34 = 0;
-    unsigned int d1 = 1, d2 = 2, d3 = 3, d4 = 4;
-    Serial.println("----------------");
-
-    TCNT1 = 0;
-    while (ACSR & (1 << ACO)) { //while input high
-      if (TIFR1 & (1 << TOV1)) { //if timer overflow
-        Nsignal--;
-        TIFR1 = _BV(TOV1);    //clears overflow
-        if (Nsignal <= 0) {
-          break;
-        }
-      }
+  while (FSKDetected > 1)
+  {
+    uint32_t codefreq = 160000000000 / FSKFilteredTicks;
+    if (FSKtx == 0) {
+      TX_State = 1;
+      digitalWrite(RX, LOW);
+      digitalWrite(TX, HIGH);
+      delay(10);
+      si5351.output_enable(SI5351_CLK1, 0);   // RX off
+      si5351.output_enable(SI5351_CLK0, 1);   // TX on
     }
-    while ((ACSR & (1 << ACO)) == 0) { //while input low
-      if (TIFR1 & (1 << TOV1)) {    //if timer overflow
-        Nsignal--;
-        TIFR1 = _BV(TOV1);         //clears overflow
-        if (Nsignal <= 0) {
-          break;
-        }
-      }
-    }
-    if (Nsignal <= 0) {   //no falling edge detected in 10 timeouts
-      break;
-    }
-    TCNT1 = 0;
-    while (ACSR & (1 << ACO)) { //while input high
-      if (TIFR1 & (1 << TOV1)) { //if timer overflow
-        Ncycle01++;
-        TIFR1 = _BV(TOV1);      //clears overflow
-        if (Ncycle01 >= 2) {
-          break;
-        }
-      }
-    }
-    d1 = ICR1;                  //timer count captured at edge
-    while ((ACSR & (1 << ACO)) == 0) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle12++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle12 >= 3) {
-          break;
-        }
-      }
-    }
-    while (ACSR & (1 << ACO)) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle12++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle12 >= 6) {
-          break;
-        }
-      }
-    }
-    d2 = ICR1;
-    while ((ACSR & (1 << ACO)) == 0) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle23++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle23 >= 3) {
-          break;
-        }
-      }
-    }
-    while (ACSR & (1 << ACO)) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle23++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle23 >= 6) {
-          break;
-        }
-      }
-    }
-    d3 = ICR1;
-    while ((ACSR & (1 << ACO)) == 0) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle34++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle34 >= 3) {
-          break;
-        }
-      }
-    }
-    while (ACSR & (1 << ACO)) {
-      if (TIFR1 & (1 << TOV1)) {
-        Ncycle34++;
-        TIFR1 = _BV(TOV1);
-        if (Ncycle34 >= 6) {
-          break;
-        }
-      }
-    }
-    d4 = ICR1;
-    unsigned long codefreq1 = 1600000000 / (65536 * Ncycle12 + d2 - d1);
-    unsigned long codefreq2 = 1600000000 / (65536 * Ncycle23 + d3 - d2);
-    unsigned long codefreq3 = 1600000000 / (65536 * Ncycle34 + d4 - d3);
-
-    //   if (d3==d4) codefreq = 5000; //what was this supposed to do?
-
-    unsigned long codefreq = (codefreq1 + codefreq2 + codefreq3) / 3;
-
-
-    //filter out spurious readings
-
-    if ((codefreq > 350000) || (codefreq < 30000))
-    {
-      codefreq = LastCodeFreq;
-      //   Serial.println("----------------");
-    }
-    else
-    {
-      LastCodeFreq = codefreq;
-    }
-
-
-
-    //         Serial.println(codefreq);
-
-    if ((codefreq < 310000) && (codefreq >= 10000)) {   // Frequency between 100 Hz and 3100 Hz
-      if (FSKtx == 0) {
-        TX_State = 1;
-        digitalWrite(RX, LOW);
-        digitalWrite(TX, HIGH);
-        delay(10);
-        si5351.output_enable(SI5351_CLK1, 0);   // RX off
-        si5351.output_enable(SI5351_CLK0, 1);   // TX on
-      }
-      si5351.set_freq((freq * 100ULL + codefreq), SI5351_CLK0);
-      if (cat_stat == 1) CAT_control();
-      FSKtx = 1;
-    }
-    else {
-      FSK--;
-      //       Serial.println("NO TONE " + codefreq);
-    }
+    
+  Serial.print( ( 16000000 / (FSKTicks)));
+  /* Serial.print("  ");
+    Serial.print((uint32_t)(FSKtemp));
+    Serial.print("  ");
+    Serial.print(VTest);
+  */   Serial.print("  ");
+  Serial.println(  codefreq);
+    si5351.set_freq((freq * 100ULL + codefreq - 300000), SI5351_CLK0);
+    if (cat_stat == 1) CAT_control();
+    FSKtx = 1;
+    if (FSKDetected > 0)
+      FSKDetected--;
   }
-#endif
+
+
   digitalWrite(TX, LOW);
 
   si5351.output_enable(SI5351_CLK0, 0);   // TX off
@@ -458,31 +340,21 @@ void loop() {
 
 ISR (ANALOG_COMP_vect)
 {
-  if (ACSR & (1 << ACO)) // Comparator out is high. Shouldn't be necessary, IRQ is only for rising edge. But because of noise and no hysteresis triggers on both edges
-    if (TCNT1 > 5333 && TCNT1 < 53333)  //prevents spurious interrupts, no hysteresis in AVR comparator. 300-3000 Hz range
+  if (ACSR & (1 << ACO)) // Comparator out is high. This test shouldn't be necessary, IRQ is only for rising edge. But because of noise and no hysteresis triggers on both edges. This prevents the use of the capture feature.
+    if (TCNT1 > 5000 && TCNT1 < 53333)  //prevents spurious interrupts, no hysteresis in AVR comparator. 300-3000 Hz range
     {
-      FSKScaledTicks = TCNT1;
+      FSKTicks = TCNT1; //Counter value here is somewhat higher than it should be, because of delay in ISR. Pretend it doesn't matter
       TCNT1 = 0;
- //     FSKScaledTicks = 1000; // Scales after counter reset, should be faster and reading more accurate
-      //one pole low pass IIR
-      //   FSKFilteredTicks = round((FSKFilter_a0 * FSKScaledTicks - FSKFilter_b1 * FSKFilterLastOut)/1000);
- /*     FSKtemp = FSKFilter_a0 * FSKScaledTicks - FSKFilter_b1 * FSKFilterLastOut - FSKLastError;
-      FSKFilteredTicks = round(FSKtemp / 1000);
-      FSKFilterLastOut = FSKFilteredTicks;
-      FSKLastError = FSKFilteredTicks * 1000 - FSKtemp;
-*/
-/*   FSKtemp = FSKFilter_a0 * FSKScaledTicks * 256 - FSKFilter_b1 * FSKFilterLastOut;
-      FSKFilterLastOut = FSKtemp / 1000;
-      FSKFilteredTicks = round(FSKFilterLastOut / 256);
- */
- FSKtemp = (long)FSKFilter_a0 * (long)FSKScaledTicks  - (long)FSKFilter_b1 * (long)FSKFilterLastOut;
-
- VTest = (long)FSKFilter_b1 * (long)FSKFilterLastOut;
-     
-      FSKFilterLastOut = FSKFilteredTicks = ((long)FSKtemp / 100L);
-      
-
+      if (FSKDetected < 3)
+        FSKDetected++;
     }
+
+
+  //one pole low pass IIR
+
+  FSKtemp = FSKFilter_a0 * FSKTicks * 100 + FSKFilter_b1 * FSKFilterLastOut;
+  FSKFilteredTicks = FSKFilterLastOut = round(FSKtemp / 256);
+
 }
 
 
@@ -542,7 +414,7 @@ void Freq_assign() {
     case 40:
       F_FT8 = 7074000;
       F_FT4 = 7047500;
-      F_JS8 = 7078000;
+      F_JS8 = 7081000;
       F_WSPR = 7038600;
       break;
     case 30:
