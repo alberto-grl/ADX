@@ -3,6 +3,7 @@
 //********************************* Write up start: 02/01/2022 ********************************************
 // FW VERSION: ADX_CAT_V1.6 - Version release date: 07/14/2023
 // Barb(Barbaros ASUROGLU) - WB2CBA - 2022
+// Alberto I4NZX
 //  Version History
 //  V1.0  Modified Calibration EEPROM to protect R/W cycle of EEPROM.
 //  V1.1 10m/28Mhz band support added.
@@ -10,6 +11,7 @@
 //  V1.4 Serial timeout delay change.
 //  V1.5 Cleanup Code by Joerg Frede - DK3JF - 2023
 //  V1.6 Band change display Bug correction - Thanks to KD5RXT and LA7WRA for reporting this issue.
+//  V1.6-NZX ISR-based audio input FSK detection
 //*********************************************************************************************************https://github.com/WB2CBA/ADX
 // Required Libraries
 // ----------------------------------------------------------------------------------------------------------------------
@@ -67,6 +69,10 @@
 // In CAT mode manual Band setup is deactivated and ADX can be operated on any band as long as the right lpf filter module is plugged in.
 // IN CAT MODE MAKE SURE THE CORRECT LPF MODULE IS PLUGGED IN WHEN OPERATING BAND IS CHANGED!!! IF WRONG LPF FILTER MODULE IS PLUGGED IN then PA POWER MOSFETS CAN BE DAMAGED!
 
+
+#define USE_JS8CALL_LSB_MOD
+//define PRINT_FSK_FREQ
+
 //*******************************[ LIBRARIES ]*************************************************
 #include <si5351.h>
 #include "Wire.h"
@@ -91,9 +97,8 @@ unsigned long F_FT4;
 unsigned long F_JS8;
 unsigned long F_WSPR;
 
-uint32_t LastCodeFreq = 100000;
 uint16_t FreqValue;
-uint32_t  FSKFilteredTicks, FSKFilter_a0, FSKTicks, FSKFilter_b1, FSKFilterLastOut, FSKLastError, VTest;
+uint32_t  FSKFilteredTicks, FSKFilter_a0, FSKTicks, FSKFilter_b1, FSKFilterLastOut;
 uint32_t  FSKtemp;
 uint32_t TestVar2;
 uint8_t FSKDetected = 0;
@@ -113,6 +118,14 @@ String sent;
 String sent2;
 
 // **********************************[ DEFINE's ]***********************************************
+
+//LSB RX and USB TX for JS8, 3KHz shift
+#define LSB_JS8_RX
+
+//Show raw and filtered FSK
+// #define PRINT_FSK_FREQ
+
+
 #define UP    2 // UP Switch
 #define DOWN  3 // DOWN Switch
 #define TXSW  4 // TX Switch
@@ -192,7 +205,7 @@ void setup() {
   ACSR |= (1 << ACIC); // Analog Comparator Capture Input
 
   //Test with bangbap reference, typ 1.1V
-   ACSR |= (1 << ACBG); // Analog Comparator Bandgap select
+  ACSR |= (1 << ACBG); // Analog Comparator Bandgap select
 
 
   ACSR |= B00010000;      // Clear flag comparator interrupt (ACI bit to 1)
@@ -213,16 +226,12 @@ void setup() {
 //***************************[ Main LOOP Function ]**************************
 void loop() {
   // CAT CHECK SERIAL FOR NEW DATA FROM WSJT-X AND RESPOND TO QUERIES
-  uint32_t CodeFreq = (16000000 / FreqValue);
 
-  Serial.print( ( 16000000 / (FSKTicks)));
-  /* Serial.print("  ");
-    Serial.print((uint32_t)(FSKtemp));
+  /*
+    Serial.print( ( 16000000 / (FSKTicks)));
     Serial.print("  ");
-    Serial.print(VTest);
-  */   Serial.print("  ");
-  Serial.println(  (uint32_t)(160000000000ULL / (FSKFilteredTicks)));
-
+    Serial.println(  (uint32_t)(160000000000ULL / (FSKFilteredTicks)));
+  */
 
 
   if ((Serial.available() > 0) || (cat_stat == 1)) {
@@ -297,7 +306,9 @@ void loop() {
 
   while (FSKDetected > 1)
   {
+    cli();
     uint32_t codefreq = 160000000000 / FSKFilteredTicks;
+    sei();
     if (FSKtx == 0) {
       TX_State = 1;
       digitalWrite(RX, LOW);
@@ -306,15 +317,23 @@ void loop() {
       si5351.output_enable(SI5351_CLK1, 0);   // RX off
       si5351.output_enable(SI5351_CLK0, 1);   // TX on
     }
-    
-  Serial.print( ( 16000000 / (FSKTicks)));
-  /* Serial.print("  ");
-    Serial.print((uint32_t)(FSKtemp));
+#ifdef PRINT_FSK_FREQ
+    Serial.print( ( 16000000 / (FSKTicks)));
     Serial.print("  ");
-    Serial.print(VTest);
-  */   Serial.print("  ");
-  Serial.println(  codefreq);
-    si5351.set_freq((freq * 100ULL + codefreq - 300000), SI5351_CLK0);
+    Serial.println(  codefreq);
+#endif
+#ifdef USE_JS8CALL_LSB_MOD
+    //LSB RX and USB TX for JS8, 3KHz shift
+    if (freq == F_JS8 && Band == 40)
+    {
+      si5351.set_freq((freq * 100ULL + codefreq - 300000), SI5351_CLK0);
+      Serial.println( "js8 shift");
+    }
+    else
+      si5351.set_freq((freq * 100ULL + codefreq), SI5351_CLK0);
+#else
+    si5351.set_freq((freq * 100ULL + codefreq), SI5351_CLK0);
+#endif
     if (cat_stat == 1) CAT_control();
     FSKtx = 1;
     if (FSKDetected > 0)
@@ -414,7 +433,11 @@ void Freq_assign() {
     case 40:
       F_FT8 = 7074000;
       F_FT4 = 7047500;
+#ifdef USE_JS8CALL_LSB_MOD
       F_JS8 = 7081000;
+#else
+      F_JS8 = 7078000;
+#endif
       F_WSPR = 7038600;
       break;
     case 30:
